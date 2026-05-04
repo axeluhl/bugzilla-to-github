@@ -498,12 +498,13 @@ def main():
 
         if issue_url:
             print(f"  [{expected_id}/{max_id}] {label} → {issue_url}")
+            # Only save progress on success
+            progress["last_completed"] = expected_id
+            progress_file.write_text(json.dumps(progress))
         else:
-            print(f"  [{expected_id}/{max_id}] {label} → FAILED (check errors above)")
-
-        # Save progress
-        progress["last_completed"] = expected_id
-        progress_file.write_text(json.dumps(progress))
+            print(f"  [{expected_id}/{max_id}] {label} → FAILED")
+            print(f"  Aborting: cannot skip a failed issue without breaking ID alignment.")
+            sys.exit(1)
 
         time.sleep(config.IMPORT_DELAY)
 
