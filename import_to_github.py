@@ -395,8 +395,8 @@ def build_cc_subscription_comment(bug):
     return "\n".join(lines)
 
 
-def import_issue(bug_id):
-    """Build and submit the import payload for a real bug."""
+def build_import_payload(bug_id):
+    """Build the import payload for a real bug. Returns (payload, assignee)."""
     bug_dir = export_dir / str(bug_id)
     bug = json.loads((bug_dir / "bug.json").read_text())
     comments = json.loads((bug_dir / "comments.json").read_text())
@@ -451,37 +451,11 @@ def import_issue(bug_id):
         while len(json.dumps(payload).encode()) > 950_000 and payload["comments"]:
             payload["comments"].pop()
 
-    resp = session.post(IMPORT_URL, json=payload)
-    resp.raise_for_status()
-    result = resp.json()
-
-    # Wait and check — if it fails due to assignee, retry without
-    issue_url = wait_for_import(result)
-    if issue_url is None and assignee:
-        del payload["issue"]["assignee"]
-        print(f"  Retrying bug {bug_id} without assignee '{assignee}'...")
-        resp = session.post(IMPORT_URL, json=payload)
-        resp.raise_for_status()
-        result = resp.json()
-        issue_url = wait_for_import(result)
-
-    return issue_url
+    return payload, assignee
 
 
-def import_placeholder(expected_number):
-    """Create a closed placeholder issue to occupy a gap in numbering."""
-    payload = {
-        "issue": {
-            "title": f"[placeholder #{expected_number}]",
-            "body": (
-                f"This issue number was reserved to maintain ID correspondence "
-                f"with the original Bugzilla instance.\n\n"
-                f"Bug {expected_number} did not exist in Bugzilla."
-            ),
-            "closed": True,
-            "labels": ["placeholder"],
-        },
-    }
+def submit_import(payload):
+    """Submit an import payload and return the API response JSON."""
     resp = session.post(IMPORT_URL, json=payload)
     resp.raise_for_status()
     return resp.json()
@@ -514,14 +488,60 @@ def main():
     max_id = max(bug_ids)
 
     # Track progress for resume capability
+    # Progress stores:
+    #   last_completed: last bug ID fully imported
+    #   pending_id: bug ID that was submitted but not yet confirmed
+    #   pending_import_id: GitHub import ID for the pending submission
     progress_file = export_dir / "import_progress.json"
     if progress_file.exists():
         progress = json.loads(progress_file.read_text())
-        start_from = progress.get("last_completed", 0) + 1
-        print(f"Resuming from issue #{start_from}")
     else:
         progress = {}
-        start_from = 1
+
+    start_from = progress.get("last_completed", 0) + 1
+
+    # Check if there's a pending import from a previous interrupted run
+    if progress.get("pending_import_id"):
+        pending_id = progress["pending_id"]
+        pending_import_id = progress["pending_import_id"]
+        print(f"Found pending import for bug {pending_id} (import ID: {pending_import_id})")
+        print(f"Checking its status...")
+
+        status_url = f"{IMPORT_URL}/{pending_import_id}"
+        resp = session.get(status_url)
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data["status"] == "imported":
+            print(f"  Already imported successfully: {data.get('issue_url', '?')}")
+            progress["last_completed"] = pending_id
+            del progress["pending_id"]
+            del progress["pending_import_id"]
+            progress_file.write_text(json.dumps(progress))
+            start_from = pending_id + 1
+        elif data["status"] == "failed":
+            errors = data.get("errors", [])
+            print(f"  Previous import failed: {errors}")
+            print(f"  Aborting: cannot recover from a failed import without breaking ID alignment.")
+            print(f"  Delete the repo, recreate it, delete {progress_file}, and restart.")
+            sys.exit(1)
+        else:
+            # Still pending — wait for it
+            print(f"  Still pending, waiting...")
+            issue_url = wait_for_import(data)
+            if issue_url:
+                print(f"  Completed: {issue_url}")
+                progress["last_completed"] = pending_id
+                del progress["pending_id"]
+                del progress["pending_import_id"]
+                progress_file.write_text(json.dumps(progress))
+                start_from = pending_id + 1
+            else:
+                print(f"  Failed. Aborting.")
+                sys.exit(1)
+
+    if start_from > 1:
+        print(f"Resuming from issue #{start_from}")
 
     print(
         f"Importing bugs 1..{max_id} "
@@ -532,17 +552,52 @@ def main():
 
     for expected_id in range(start_from, max_id + 1):
         if expected_id in bug_id_set:
-            issue_url = import_issue(expected_id)
             label = f"Bug {expected_id}"
+            payload, assignee = build_import_payload(expected_id)
+
+            # Save pending state BEFORE submitting
+            progress["pending_id"] = expected_id
+            result = submit_import(payload)
+            progress["pending_import_id"] = result["id"]
+            progress_file.write_text(json.dumps(progress))
+
+            issue_url = wait_for_import(result)
+
+            # If failed due to assignee, retry without
+            if issue_url is None and assignee and "assignee" in payload["issue"]:
+                del payload["issue"]["assignee"]
+                print(f"  Retrying bug {expected_id} without assignee '{assignee}'...")
+                result = submit_import(payload)
+                progress["pending_import_id"] = result["id"]
+                progress_file.write_text(json.dumps(progress))
+                issue_url = wait_for_import(result)
         else:
-            result = import_placeholder(expected_id)
             label = f"Placeholder {expected_id}"
+            # Save pending state BEFORE submitting
+            progress["pending_id"] = expected_id
+            result = submit_import({
+                "issue": {
+                    "title": f"[placeholder #{expected_id}]",
+                    "body": (
+                        f"This issue number was reserved to maintain ID correspondence "
+                        f"with the original Bugzilla instance.\n\n"
+                        f"Bug {expected_id} did not exist in Bugzilla."
+                    ),
+                    "closed": True,
+                    "labels": ["placeholder"],
+                },
+            })
+            progress["pending_import_id"] = result["id"]
+            progress_file.write_text(json.dumps(progress))
+
             issue_url = wait_for_import(result)
 
         if issue_url:
             print(f"  [{expected_id}/{max_id}] {label} → {issue_url}")
-            # Only save progress on success
+            # Mark as fully completed
             progress["last_completed"] = expected_id
+            progress.pop("pending_id", None)
+            progress.pop("pending_import_id", None)
             progress_file.write_text(json.dumps(progress))
         else:
             print(f"  [{expected_id}/{max_id}] {label} → FAILED")
