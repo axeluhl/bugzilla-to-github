@@ -148,15 +148,53 @@ def build_labels(bug):
     return labels
 
 
-def find_closer(bug, history):
-    """Find who closed/resolved the bug by scanning history."""
-    for entry in reversed(history):
+def build_status_change_comments(bug, history):
+    """Generate comments for status transitions from the bug history.
+
+    Captures RESOLVED, REOPENED, VERIFIED, CLOSED transitions with
+    timestamp and actor. This preserves the full chronology for bugs
+    that were reopened and resolved multiple times.
+    """
+    status_comments = []
+    status_transitions = ("RESOLVED", "VERIFIED", "CLOSED", "REOPENED")
+
+    for entry in history:
+        who = entry.get("who", "unknown")
+        when = entry.get("when", "")
         for change in entry.get("changes", []):
-            if change.get("field_name") == "status" and change.get("added") in (
-                "RESOLVED", "VERIFIED", "CLOSED"
-            ):
-                return entry.get("who")
-    return None
+            if change.get("field_name") != "status":
+                continue
+            new_status = change.get("added", "")
+            old_status = change.get("removed", "")
+            if new_status not in status_transitions:
+                continue
+
+            actor = map_user(who)
+
+            if new_status in ("RESOLVED", "VERIFIED", "CLOSED"):
+                # Check if there's a resolution change in the same history entry
+                resolution = ""
+                for other_change in entry.get("changes", []):
+                    if other_change.get("field_name") == "resolution":
+                        resolution = other_change.get("added", "")
+                        break
+                if not resolution:
+                    resolution = bug.get("resolution", "")
+
+                body = f"*{actor}* changed status from **{old_status}** to **{new_status}**"
+                if resolution:
+                    body += f" ({resolution})"
+            elif new_status == "REOPENED":
+                body = f"*{actor}* **reopened** this issue (was {old_status})"
+            else:
+                body = f"*{actor}* changed status: {old_status} → {new_status}"
+
+            status_comments.append({
+                "created_at": when,
+                "body": body,
+            })
+
+    return status_comments
 
 
 def build_issue_body(bug, comments, history):
@@ -226,16 +264,6 @@ def build_issue_body(bug, comments, history):
         parts.append(f"\n**Duplicate of:** #{bug['dupe_of']}\n")
 
     parts.append(f"\n---\n\n{description}")
-
-    # Closed-by attribution
-    if is_closed(bug):
-        closer_email = find_closer(bug, history)
-        if closer_email:
-            closer = map_user(closer_email)
-            resolution = bug.get("resolution", "RESOLVED")
-            parts.append(
-                f"\n\n---\n*Resolved as {resolution} by {closer}*"
-            )
 
     return "\n".join(parts)
 
@@ -377,6 +405,13 @@ def import_issue(bug_id):
 
     body = build_issue_body(bug, comments, history)
     gh_comments = build_comments(comments, bug_id, attachments)
+
+    # Add status-change comments and sort everything chronologically
+    status_comments = build_status_change_comments(bug, history)
+    if status_comments:
+        gh_comments.extend(status_comments)
+        # Sort by created_at; comments without a timestamp go to the end
+        gh_comments.sort(key=lambda c: c.get("created_at", "9999"))
 
     # Add a final comment that @mentions CC'd users to subscribe them
     cc_comment = build_cc_subscription_comment(bug)
