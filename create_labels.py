@@ -79,8 +79,9 @@ def collect_labels():
             name = f"resolution: {bug['resolution']}"
             labels[name] = COLORS["resolution"]
 
-    # Always include the placeholder label
+    # Always include the placeholder and duplicate labels
     labels["placeholder"] = COLORS["placeholder"]
+    labels["duplicate"] = COLORS["resolution"]
 
     return labels
 

@@ -142,6 +142,9 @@ def build_labels(bug):
     if bug.get("resolution") and bug["resolution"] != "FIXED":
         labels.append(f"resolution: {bug['resolution']}")
 
+    if bug.get("resolution") == "DUPLICATE":
+        labels.append("duplicate")
+
     return labels
 
 
@@ -217,6 +220,11 @@ def build_issue_body(bug, comments, history):
 
     # Compose
     parts = [meta]
+
+    # Duplicate cross-reference
+    if bug.get("dupe_of"):
+        parts.append(f"\n**Duplicate of:** #{bug['dupe_of']}\n")
+
     parts.append(f"\n---\n\n{description}")
 
     # Closed-by attribution
