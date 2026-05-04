@@ -64,10 +64,15 @@ and receive a notification email (see Step 7) inviting them to subscribe on GitH
 
 ```bash
 python3 export_bugzilla.py
+python3 export_bugzilla.py --workers 16   # more parallelism if server can handle it
 ```
 
 Exports all bugs, comments, attachments (binary files), and history to `bugzilla_export/`.
 Also fetches real names for all users encountered.
+
+Uses 8 parallel workers by default. Requests have a 60s timeout and retry up to
+5 times with exponential backoff on server errors (429/5xx). Safe to interrupt and
+restart — only fully-exported bugs (with a `.done` marker) are skipped.
 
 Output structure:
 ```
@@ -81,10 +86,15 @@ bugzilla_export/
 │   ├── attachments/          # Binary attachment files
 │   │   ├── 101_patch.diff
 │   │   └── 102_screenshot.png
-│   └── history.json          # Field change history
+│   ├── history.json          # Field change history
+│   └── .done                 # Completion marker (resume-safe)
 ├── 2/
 │   └── ...
 ```
+
+The `.done` marker is written only after all files for a bug are fully exported.
+If the script is interrupted (crash, reboot, Ctrl+C), incomplete bugs are
+automatically re-exported on the next run.
 
 ### Step 2: Upload Attachments
 
