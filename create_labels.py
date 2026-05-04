@@ -64,11 +64,11 @@ def collect_labels():
             name = f"priority: {bug['priority']}"
             labels[name] = COLORS["priority"]
 
-        if bug.get("op_sys") and bug["op_sys"] not in ("All", "Unspecified"):
+        if bug.get("op_sys"):
             name = f"os: {bug['op_sys']}"
             labels[name] = COLORS["os"]
 
-        if bug.get("platform") and bug["platform"] not in ("All", "Unspecified"):
+        if bug.get("platform"):
             name = f"platform: {bug['platform']}"
             labels[name] = COLORS["platform"]
 

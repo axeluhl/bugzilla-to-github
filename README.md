@@ -182,7 +182,25 @@ Creates formal GitHub sub-issue relationships via GraphQL:
 
 Limits: 100 sub-issues per parent, 8 nesting levels, no cycles.
 
-### Step 7: Notify Unmapped CC Users
+### Step 7: Fix Up Comment Links
+
+```bash
+python3 fixup_comment_links.py
+```
+
+During import, references like `comment #4` or `bug 123 comment #7` can't be
+turned into direct links because GitHub comment IDs aren't known yet. This
+post-import script:
+
+1. Fetches all comments for every imported issue to learn their URLs
+2. Rewrites `comment N (on this issue)` → `[comment N](https://...#issuecomment-XXX)`
+3. Rewrites `#M (comment N)` → `[#M comment N](https://...#issuecomment-XXX)`
+
+Uses `PATCH /repos/.../issues/{n}` and `PATCH /repos/.../issues/comments/{id}`
+to update bodies in place. This works because all content was created by the
+import token holder.
+
+### Step 8: Notify Unmapped CC Users
 
 For users without a known GitHub account, send an email listing their CC'd issues
 with links to subscribe on GitHub.
@@ -221,6 +239,7 @@ with a subscribe link for each.
 | `create_labels.py` | Pre-create all labels on target repo |
 | `import_to_github.py` | Import issues via the GitHub Import API |
 | `link_sub_issues.py` | Wire up blocks/depends_on as GitHub sub-issues |
+| `fixup_comment_links.py` | Post-import: rewrite comment references to anchor links |
 | `notify_cc_users.py` | Email unmapped CC users with subscribe links |
 | `rewrite_references.py` | Library: rewrites bug/comment references to GitHub links |
 

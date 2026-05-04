@@ -107,10 +107,10 @@ def build_labels(bug):
     if bug.get("priority") and bug["priority"] != "--":
         labels.append(f"priority: {bug['priority']}")
 
-    if bug.get("op_sys") and bug["op_sys"] not in ("All", "Unspecified"):
+    if bug.get("op_sys"):
         labels.append(f"os: {bug['op_sys']}")
 
-    if bug.get("platform") and bug["platform"] not in ("All", "Unspecified"):
+    if bug.get("platform"):
         labels.append(f"platform: {bug['platform']}")
 
     for kw in bug.get("keywords", []):
@@ -281,34 +281,46 @@ def build_comments(comments, bug_id, attachments):
 
 
 def build_cc_subscription_comment(bug):
-    """Build a comment that @mentions all mapped CC users to subscribe them.
+    """Build a comment that @mentions mapped users to subscribe them.
+
+    Includes the reporter (if mapped) and all CC users. The assignee is already
+    subscribed natively via the issue's assignee field, so we skip them here.
 
     Mentioning a GitHub user in a comment auto-subscribes them to the issue,
-    which replicates Bugzilla's CC behavior (receive notifications on changes).
-    Only mapped users are mentioned — unmapped users are listed for reference
-    but won't receive notifications.
+    which replicates Bugzilla's notification behavior.
     """
-    cc_emails = []
+    assignee_gh = map_user_for_assignee(bug.get("assigned_to", ""))
+
+    # Collect all users who should be subscribed (reporter + CC)
+    subscribe_emails = set()
+
+    # Reporter
+    reporter_email = bug.get("creator", "")
+    if reporter_email:
+        subscribe_emails.add(reporter_email)
+
+    # CC list
     if bug.get("cc_detail"):
-        cc_emails = [u.get("name", "") or u.get("email", "") for u in bug["cc_detail"]]
+        for u in bug["cc_detail"]:
+            email = u.get("name", "") or u.get("email", "")
+            if email:
+                subscribe_emails.add(email)
     elif bug.get("cc"):
-        cc_emails = bug["cc"]
+        subscribe_emails.update(bug["cc"])
 
-    if not cc_emails:
-        return None
+    # Split into mapped (can be @mentioned) and unmapped
+    mapped = []
+    for e in sorted(subscribe_emails):
+        gh_user = user_map.get(e)
+        if gh_user and gh_user != assignee_gh:  # assignee already subscribed
+            mapped.append(gh_user)
 
-    mapped = [user_map[e] for e in cc_emails if user_map.get(e)]
-    unmapped = [e for e in cc_emails if not user_map.get(e)]
+    unmapped = [e for e in sorted(subscribe_emails) if not user_map.get(e)]
 
-    if not mapped and not unmapped:
-        return None
-
-    # Only create the comment if there are mapped users to subscribe
-    # (unmapped users alone don't benefit from a mention comment)
     if not mapped:
         return None
 
-    lines = ["*Subscribing original CC list:*\n"]
+    lines = ["*Subscribing participants (reporter + CC):*\n"]
     lines.append(" ".join(f"@{u}" for u in mapped))
 
     if unmapped:
@@ -319,7 +331,7 @@ def build_cc_subscription_comment(bug):
                 unmapped_display.append(f"{real_name} (`{e}`)")
             else:
                 unmapped_display.append(f"`{e}`")
-        lines.append(f"\n*Unmapped CC (no GitHub account known):* {', '.join(unmapped_display)}")
+        lines.append(f"\n*Unmapped (no GitHub account known):* {', '.join(unmapped_display)}")
 
     return "\n".join(lines)
 
