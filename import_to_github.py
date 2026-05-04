@@ -133,8 +133,8 @@ def find_closer(bug, history):
     return None
 
 
-def build_issue_body(bug, comments, attachments, history):
-    """Construct the full issue body with metadata, description, deps, attachments."""
+def build_issue_body(bug, comments, history):
+    """Construct the full issue body with metadata, description, and close attribution."""
     # Description is comment 0
     description = ""
     if comments and comments[0].get("count") == 0:
@@ -192,26 +192,9 @@ def build_issue_body(bug, comments, attachments, history):
         f"({config.BUGZILLA_URL}/show_bug.cgi?id={bug_id}) |\n"
     )
 
-    # Attachments
-    att_section = ""
-    if attachments:
-        att_section = "\n\n### Attachments\n\n"
-        for att in attachments:
-            fname = att["local_file"]
-            url = f"{ATTACHMENT_BASE}/{bug_id}/{fname}"
-            line = f"- [{att['file_name']}]({url})"
-            if att.get("summary"):
-                line += f" — {att['summary']}"
-            line += f" ({att.get('content_type', 'unknown')}, {att.get('size', '?')} bytes)"
-            if att.get("is_obsolete"):
-                line += " *(obsolete)*"
-            att_section += line + "\n"
-
     # Compose
     parts = [meta]
     parts.append(f"\n---\n\n{description}")
-    if att_section:
-        parts.append(att_section)
 
     # Closed-by attribution
     if is_closed(bug):
@@ -226,11 +209,38 @@ def build_issue_body(bug, comments, attachments, history):
     return "\n".join(parts)
 
 
-def build_comments(comments, bug_id):
+IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"}
+
+
+def format_attachment(att, bug_id):
+    """Render an attachment as inline image or download link."""
+    fname = att["local_file"]
+    url = f"{ATTACHMENT_BASE}/{bug_id}/{fname}"
+    content_type = att.get("content_type", "")
+    summary = att.get("summary", att.get("file_name", "attachment"))
+    obsolete = " *(obsolete)*" if att.get("is_obsolete") else ""
+
+    if content_type in IMAGE_CONTENT_TYPES:
+        # Inline image with summary as alt text
+        return f"![{summary}]({url}){obsolete}"
+    else:
+        # Download link with metadata
+        size = att.get("size", "?")
+        return f"[{att['file_name']}]({url}) — {summary} ({content_type}, {size} bytes){obsolete}"
+
+
+def build_comments(comments, bug_id, attachments):
     """Convert Bugzilla comments to the GitHub Import API format.
 
     Skips comment 0 (used as issue body). Embeds original author in body text.
+    Attachments are rendered inline in the comment that introduced them
+    (matched via comment.attachment_id). Orphan attachments (not referenced by
+    any comment) get their own standalone comments at the end.
     """
+    # Index attachments by their ID for lookup
+    att_by_id = {att["id"]: att for att in attachments}
+    referenced_att_ids = set()
+
     gh_comments = []
     for c in comments:
         if c.get("count", 0) == 0:
@@ -239,7 +249,14 @@ def build_comments(comments, bug_id):
         author = map_user(c.get("creator", "unknown"))
         body = rewrite_bug_references(c["text"], current_bug_id=bug_id)
 
-        # Prefix with author attribution
+        # If this comment introduced an attachment, embed it
+        att_id = c.get("attachment_id")
+        if att_id and att_id in att_by_id:
+            referenced_att_ids.add(att_id)
+            att = att_by_id[att_id]
+            att_rendered = format_attachment(att, bug_id)
+            body = f"{body}\n\n{att_rendered}"
+
         comment_body = f"**{author}** commented:\n\n{body}"
 
         gh_comment = {
@@ -247,6 +264,18 @@ def build_comments(comments, bug_id):
             "body": comment_body,
         }
         gh_comments.append(gh_comment)
+
+    # Orphan attachments — not referenced by any comment
+    for att in attachments:
+        if att["id"] in referenced_att_ids:
+            continue
+        att_rendered = format_attachment(att, bug_id)
+        creator = att.get("creator", "unknown")
+        author = map_user(creator)
+        comment_body = f"**{author}** attached:\n\n{att_rendered}"
+        gh_comments.append({
+            "body": comment_body,
+        })
 
     return gh_comments
 
@@ -303,8 +332,8 @@ def import_issue(bug_id):
     attachments = json.loads((bug_dir / "attachments.json").read_text())
     history = json.loads((bug_dir / "history.json").read_text())
 
-    body = build_issue_body(bug, comments, attachments, history)
-    gh_comments = build_comments(comments, bug_id)
+    body = build_issue_body(bug, comments, history)
+    gh_comments = build_comments(comments, bug_id, attachments)
 
     # Add a final comment that @mentions CC'd users to subscribe them
     cc_comment = build_cc_subscription_comment(bug)
