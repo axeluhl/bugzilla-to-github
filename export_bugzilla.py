@@ -15,22 +15,35 @@ from pathlib import Path
 from threading import Lock
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 import config
 
 export_dir = Path(config.EXPORT_DIR)
+
+REQUEST_TIMEOUT = 60  # seconds per request
 
 # Each thread gets its own session (connection pooling per thread)
 _thread_local_sessions = {}
 
 
 def get_session():
-    """Return a per-thread requests session."""
+    """Return a per-thread requests session with retry and timeout policy."""
     import threading
     tid = threading.current_thread().ident
     if tid not in _thread_local_sessions:
         s = requests.Session()
         s.params = {"api_key": config.BUGZILLA_API_KEY}
+        retry_strategy = Retry(
+            total=5,
+            backoff_factor=2,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        s.mount("http://", adapter)
+        s.mount("https://", adapter)
         _thread_local_sessions[tid] = s
     return _thread_local_sessions[tid]
 
@@ -57,6 +70,7 @@ def get_all_bug_ids():
                 "offset": offset,
                 "include_fields": "id",
             },
+            timeout=REQUEST_TIMEOUT,
         )
         resp.raise_for_status()
         bugs = resp.json()["bugs"]
@@ -69,25 +83,35 @@ def get_all_bug_ids():
 
 
 def export_bug(bug_id):
-    """Export a single bug: details, comments, attachments, history."""
+    """Export a single bug: details, comments, attachments, history.
+
+    Uses a .done marker file to track completion. If the script is interrupted
+    mid-export, the incomplete directory will be re-exported on the next run.
+    """
     session = get_session()
     bug_dir = export_dir / str(bug_id)
+    done_marker = bug_dir / ".done"
+
+    # Skip if already fully exported
+    if done_marker.exists():
+        return None
+
     bug_dir.mkdir(parents=True, exist_ok=True)
 
     # Bug details (all fields)
-    resp = session.get(f"{config.BUGZILLA_URL}/rest/bug/{bug_id}")
+    resp = session.get(f"{config.BUGZILLA_URL}/rest/bug/{bug_id}", timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     bug_data = resp.json()["bugs"][0]
     (bug_dir / "bug.json").write_text(json.dumps(bug_data, indent=2))
 
     # Comments
-    resp = session.get(f"{config.BUGZILLA_URL}/rest/bug/{bug_id}/comment")
+    resp = session.get(f"{config.BUGZILLA_URL}/rest/bug/{bug_id}/comment", timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     comments = resp.json()["bugs"][str(bug_id)]["comments"]
     (bug_dir / "comments.json").write_text(json.dumps(comments, indent=2))
 
     # Attachments (with binary data saved to disk)
-    resp = session.get(f"{config.BUGZILLA_URL}/rest/bug/{bug_id}/attachment")
+    resp = session.get(f"{config.BUGZILLA_URL}/rest/bug/{bug_id}/attachment", timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     attachments_raw = resp.json()["bugs"].get(str(bug_id), [])
 
@@ -109,10 +133,13 @@ def export_bug(bug_id):
     )
 
     # History
-    resp = session.get(f"{config.BUGZILLA_URL}/rest/bug/{bug_id}/history")
+    resp = session.get(f"{config.BUGZILLA_URL}/rest/bug/{bug_id}/history", timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     history = resp.json()["bugs"][0]["history"]
     (bug_dir / "history.json").write_text(json.dumps(history, indent=2))
+
+    # Mark as fully exported
+    done_marker.write_text("")
 
     return bug_data["summary"]
 
@@ -156,6 +183,7 @@ def fetch_user_realnames(emails):
         resp = session.get(
             f"{config.BUGZILLA_URL}/rest/user",
             params={"names": batch},
+            timeout=REQUEST_TIMEOUT,
         )
         if resp.status_code == 200:
             for user in resp.json().get("users", []):
@@ -186,11 +214,11 @@ def main():
 
     (export_dir / "bug_ids.json").write_text(json.dumps(bug_ids))
 
-    # Skip already-exported bugs (allows resuming)
+    # Skip already-exported bugs (uses .done marker for completeness check)
     remaining = []
     for bug_id in bug_ids:
-        bug_json = export_dir / str(bug_id) / "bug.json"
-        if not bug_json.exists():
+        done_marker = export_dir / str(bug_id) / ".done"
+        if not done_marker.exists():
             remaining.append(bug_id)
 
     if len(remaining) < len(bug_ids):
@@ -213,6 +241,8 @@ def main():
             completed += 1
             try:
                 summary = future.result()
+                if summary is None:
+                    continue  # was already done (race with marker check)
                 elapsed = time.time() - start_time
                 rate = (completed - (total - len(remaining))) / elapsed if elapsed > 0 else 0
                 eta = (len(remaining) - (completed - (total - len(remaining)))) / rate if rate > 0 else 0
