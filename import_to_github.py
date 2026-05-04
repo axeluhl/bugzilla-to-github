@@ -54,6 +54,29 @@ ATTACHMENT_BASE = (
 )
 
 
+def fetch_collaborators():
+    """Fetch the set of GitHub usernames who are collaborators on the target repo."""
+    collaborators = set()
+    url = f"https://api.github.com/repos/{config.GITHUB_OWNER}/{config.GITHUB_REPO}/collaborators"
+    params = {"per_page": 100}
+    while url:
+        resp = session.get(url, params=params)
+        if resp.status_code == 403:
+            print("  Warning: cannot list collaborators (insufficient permissions). "
+                  "Assignee will be attempted anyway with retry fallback.")
+            return None  # None = unknown, try all
+        resp.raise_for_status()
+        for user in resp.json():
+            collaborators.add(user["login"])
+        url = resp.links.get("next", {}).get("url")
+        params = {}
+    return collaborators
+
+
+# Pre-fetch collaborators so we only assign to users with repo access
+_collaborators = fetch_collaborators()
+
+
 def map_user(bugzilla_email):
     """Map a Bugzilla email to a GitHub @mention, or fall back to real name + email."""
     gh_user = user_map.get(bugzilla_email)
@@ -371,10 +394,11 @@ def import_issue(bug_id):
             "last_change_time", bug["creation_time"]
         )
 
-    # Set assignee if we have a mapping
+    # Set assignee if we have a mapping and the user is a collaborator
     assignee = map_user_for_assignee(bug.get("assigned_to", ""))
     if assignee:
-        payload["issue"]["assignee"] = assignee
+        if _collaborators is None or assignee in _collaborators:
+            payload["issue"]["assignee"] = assignee
 
     # Check payload size (1 MB limit)
     payload_size = len(json.dumps(payload).encode())
@@ -386,7 +410,19 @@ def import_issue(bug_id):
 
     resp = session.post(IMPORT_URL, json=payload)
     resp.raise_for_status()
-    return resp.json()
+    result = resp.json()
+
+    # Wait and check — if it fails due to assignee, retry without
+    issue_url = wait_for_import(result)
+    if issue_url is None and assignee:
+        del payload["issue"]["assignee"]
+        print(f"  Retrying bug {bug_id} without assignee '{assignee}'...")
+        resp = session.post(IMPORT_URL, json=payload)
+        resp.raise_for_status()
+        result = resp.json()
+        issue_url = wait_for_import(result)
+
+    return issue_url
 
 
 def import_placeholder(expected_number):
@@ -453,14 +489,13 @@ def main():
 
     for expected_id in range(start_from, max_id + 1):
         if expected_id in bug_id_set:
-            result = import_issue(expected_id)
+            issue_url = import_issue(expected_id)
             label = f"Bug {expected_id}"
         else:
             result = import_placeholder(expected_id)
             label = f"Placeholder {expected_id}"
+            issue_url = wait_for_import(result)
 
-        # Wait for the import to complete before moving to the next
-        issue_url = wait_for_import(result)
         if issue_url:
             print(f"  [{expected_id}/{max_id}] {label} → {issue_url}")
         else:
