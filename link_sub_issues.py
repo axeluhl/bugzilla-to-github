@@ -90,6 +90,9 @@ def add_blocked_by(issue_node_id, blocking_node_id):
         },
     })
     if "errors" in result:
+        for err in result["errors"]:
+            if "already been taken" in err.get("message", ""):
+                return True, "already exists"
         return False, result["errors"]
     return True, result["data"]["addBlockedBy"]
 
@@ -153,7 +156,10 @@ def main():
 
         ok, result = add_blocked_by(blocked_id, blocking_id)
         if ok:
-            print(f"  #{blocking_num} blocks #{blocked_num}: linked")
+            if result == "already exists":
+                print(f"  #{blocking_num} blocks #{blocked_num}: already exists")
+            else:
+                print(f"  #{blocking_num} blocks #{blocked_num}: linked")
             success += 1
             completed.add((blocking_num, blocked_num))
             progress_file.write_text(json.dumps(sorted(completed)))
