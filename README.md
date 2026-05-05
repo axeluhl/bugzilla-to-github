@@ -6,7 +6,7 @@ Migrates a Bugzilla 5.2 instance to GitHub Issues preserving:
 - **Timestamps** — creation time, close time, and comment dates preserved
 - **User attribution** — mapped users get @mentions; unmapped users show Real Name + email
 - **Product/component** — preserved as GitHub labels
-- **Dependencies** — `blocks`/`depends_on` become GitHub sub-issue relationships
+- **Dependencies** — `blocks`/`depends_on` become GitHub blocking/blocked-by relationships
 - **See-also** — Bugzilla see_also URLs converted to `#N` cross-references
 - **Inline references** — `bug 123`, `Bug#45`, `comment #7` rewritten to GitHub links
 - **Attachments** — uploaded to a dedicated repo and linked in issue bodies
@@ -168,7 +168,7 @@ The script:
 - Handles the 1 MB payload limit by truncating excess comments if needed
 - Appends a CC subscription comment that @mentions mapped CC users
 
-### Step 6: Link Sub-Issues (Dependencies)
+### Step 6: Link Dependencies (Blocking/Blocked-by)
 
 After all issues are imported:
 
@@ -176,18 +176,13 @@ After all issues are imported:
 python3 link_sub_issues.py
 ```
 
-Creates formal GitHub sub-issue relationships via GraphQL:
-- Bugzilla `A depends_on B` → B is parent, A is sub-issue of B
-- Bugzilla `A blocks B` → A is parent, B is sub-issue of A
+Creates GitHub issue dependency relationships via the GraphQL `addBlockedBy` mutation:
+- Bugzilla `A blocks B` → A blocks B
+- Bugzilla `A depends_on B` → B blocks A
 
-**Multi-parent handling:** GitHub only allows one parent per child issue.
-When a bug depends on multiple others, the earliest-created relationship
-(by Bugzilla history timestamp) gets the sub-issue link. The remaining
-relationships are preserved as timestamped comments created during import
-(Step 5), with full provenance (who added the link and when). The logic
-for this split lives in `dependency_plan.py`.
-
-Limits: 100 sub-issues per parent, 8 nesting levels, no cycles.
+Unlike sub-issues (parent/child), blocking relationships have no single-parent
+constraint — an issue can be blocked by many others, matching Bugzilla's model exactly.
+Issues show "Blocking" and "Blocked by" in GitHub's UI and are searchable via those filters.
 
 ### Step 7: Fix Up Comment Links
 
@@ -245,8 +240,7 @@ with a subscribe link for each.
 | `upload_attachments.py` | Upload attachment files to GitHub |
 | `create_labels.py` | Pre-create all labels on target repo |
 | `import_to_github.py` | Import issues via the GitHub Import API |
-| `dependency_plan.py` | Library: pre-computes which dependencies can be sub-issue links vs. comments |
-| `link_sub_issues.py` | Wire up blocks/depends_on as GitHub sub-issues |
+| `link_sub_issues.py` | Wire up blocks/depends_on as GitHub blocking relationships |
 | `fixup_comment_links.py` | Post-import: rewrite comment references to anchor links |
 | `notify_cc_users.py` | Email unmapped CC users with subscribe links |
 | `rewrite_references.py` | Library: rewrites bug/comment references to GitHub links |

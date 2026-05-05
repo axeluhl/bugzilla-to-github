@@ -1,34 +1,25 @@
 #!/usr/bin/env python3
-"""Post-import step: wire up blocks/depends_on as GitHub sub-issues.
+"""Post-import step: wire up blocks/depends_on as GitHub issue dependencies.
 
-GitHub's sub-issues model is parent → child. We interpret:
-  - Bugzilla "A depends_on B" → B is parent, A is sub-issue of B
-    (A can't proceed until B is done → A is a child task of B)
-  - Bugzilla "A blocks B" → A is parent, B is sub-issue of A
-    (A must finish before B can proceed → B is a child task of A)
+Uses the GraphQL addBlockedBy mutation to create blocking relationships:
+  - Bugzilla "A blocks B" → A blocks B (issueId=B, blockingIssueId=A)
+  - Bugzilla "A depends_on B" → B blocks A (issueId=A, blockingIssueId=B)
 
-This uses the GraphQL addSubIssue mutation:
-  mutation {
-    addSubIssue(input: {issueId: "<parent>", subIssueId: "<child>"}) {
-      issue { id }
-      subIssue { id }
-    }
-  }
-
-Only relationships that can succeed (one parent per child) are attempted here.
-Multi-parent conflicts are handled at import time as timestamped comments
-(see dependency_plan.py and import_to_github.py).
+Unlike sub-issues (parent/child), blocking relationships have no
+single-parent constraint — an issue can be blocked by many others.
 
 Run this AFTER import_to_github.py has completed successfully.
-Note: sub-issues support up to 100 children per parent and 8 levels of nesting.
 """
 
+import json
 import time
+from pathlib import Path
 
 import requests
 
 import config
-from dependency_plan import compute_dependency_plan
+
+export_dir = Path(config.EXPORT_DIR)
 
 GRAPHQL_URL = "https://api.github.com/graphql"
 
@@ -66,39 +57,56 @@ def get_issue_node_id(issue_number):
     return None
 
 
-def add_sub_issue(parent_node_id, child_node_id):
-    """Add a sub-issue relationship via GraphQL."""
+def add_blocked_by(issue_node_id, blocking_node_id):
+    """Create a blocking relationship via GraphQL addBlockedBy mutation."""
     mutation = """
-    mutation($parentId: ID!, $subIssueId: ID!) {
-      addSubIssue(input: {issueId: $parentId, subIssueId: $subIssueId}) {
+    mutation($issueId: ID!, $blockingIssueId: ID!) {
+      addBlockedBy(input: {issueId: $issueId, blockingIssueId: $blockingIssueId}) {
         issue { number }
-        subIssue { number }
+        blockingIssue { number }
       }
     }
     """
     resp = session.post(GRAPHQL_URL, json={
         "query": mutation,
         "variables": {
-            "parentId": parent_node_id,
-            "subIssueId": child_node_id,
+            "issueId": issue_node_id,
+            "blockingIssueId": blocking_node_id,
         },
     })
     resp.raise_for_status()
     result = resp.json()
     if "errors" in result:
         return False, result["errors"]
-    return True, result["data"]["addSubIssue"]
+    return True, result["data"]["addBlockedBy"]
 
 
 def main():
-    plan = compute_dependency_plan(config.EXPORT_DIR)
-    linkable = plan["linkable"]
-    comment_only = plan["comment_only"]
+    bug_ids = json.loads((export_dir / "bug_ids.json").read_text())
+    bug_id_set = set(bug_ids)
 
-    print(f"Dependency plan: {len(linkable)} linkable, {len(comment_only)} comment-only (handled at import time).")
-    print(f"Creating {len(linkable)} sub-issue links...")
+    # Collect all blocking relationships
+    # "A blocks B" → A blocks B (blockingIssueId=A, issueId=B)
+    # "A depends_on B" → B blocks A (blockingIssueId=B, issueId=A)
+    relationships = set()  # (blocking_issue, blocked_issue)
 
-    if not linkable:
+    for bug_id in bug_ids:
+        bug_path = export_dir / str(bug_id) / "bug.json"
+        if not bug_path.exists():
+            continue
+        bug = json.loads(bug_path.read_text())
+
+        for blocked_id in bug.get("blocks", []):
+            if blocked_id in bug_id_set:
+                relationships.add((bug_id, blocked_id))
+
+        for dep_id in bug.get("depends_on", []):
+            if dep_id in bug_id_set:
+                relationships.add((dep_id, bug_id))
+
+    print(f"Found {len(relationships)} blocking relationships to create.")
+
+    if not relationships:
         print("Nothing to do.")
         return
 
@@ -113,21 +121,21 @@ def main():
     success = 0
     failed = 0
 
-    for parent_num, child_num in sorted(linkable):
-        parent_id = get_cached_node_id(parent_num)
-        child_id = get_cached_node_id(child_num)
+    for blocking_num, blocked_num in sorted(relationships):
+        blocking_id = get_cached_node_id(blocking_num)
+        blocked_id = get_cached_node_id(blocked_num)
 
-        if not parent_id or not child_id:
-            print(f"  SKIP #{parent_num} → #{child_num}: could not resolve node IDs")
+        if not blocking_id or not blocked_id:
+            print(f"  SKIP #{blocking_num} blocks #{blocked_num}: could not resolve node IDs")
             failed += 1
             continue
 
-        ok, result = add_sub_issue(parent_id, child_id)
+        ok, result = add_blocked_by(blocked_id, blocking_id)
         if ok:
-            print(f"  #{parent_num} → #{child_num}: linked")
+            print(f"  #{blocking_num} blocks #{blocked_num}: linked")
             success += 1
         else:
-            print(f"  #{parent_num} → #{child_num}: FAILED {result}")
+            print(f"  #{blocking_num} blocks #{blocked_num}: FAILED {result}")
             failed += 1
 
         time.sleep(0.5)

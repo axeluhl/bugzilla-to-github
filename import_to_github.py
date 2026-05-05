@@ -28,7 +28,6 @@ import requests
 
 import config
 from rewrite_references import rewrite_bug_references
-from dependency_plan import compute_dependency_plan
 
 export_dir = Path(config.EXPORT_DIR)
 
@@ -38,9 +37,6 @@ user_map = json.loads(Path(config.USER_MAPPING_FILE).read_text())
 # Load real names (email → display name from Bugzilla)
 realname_file = export_dir / "user_realnames.json"
 realname_map = json.loads(realname_file.read_text()) if realname_file.exists() else {}
-
-# Pre-compute dependency plan (which relationships need fallback comments)
-_dep_plan = compute_dependency_plan(export_dir)
 
 session = requests.Session()
 session.headers.update({
@@ -399,45 +395,6 @@ def build_cc_subscription_comment(bug):
     return "\n".join(lines)
 
 
-def build_dependency_comments(bug_id, bug):
-    """Generate timestamped comments for dependency relationships that cannot
-    be represented as GitHub sub-issue links (child already has a parent).
-
-    Adds comments on both sides:
-    - On the parent: "Blocks #child"
-    - On the child: "Depends on #parent"
-    """
-    comments = []
-    comment_only = _dep_plan["comment_only"]
-    provenance = _dep_plan["provenance"]
-
-    for parent, child in comment_only:
-        prov = provenance.get((parent, child))
-        if prov:
-            actor = map_user(prov["who"])
-            when = prov["when"]
-            attribution = f" (added by {actor} on {when})"
-            timestamp = when
-        else:
-            attribution = ""
-            timestamp = bug.get("creation_time", "")
-
-        if parent == bug_id:
-            body = (
-                f"**Blocks** #{child}{attribution}\n\n"
-                f"*Note: sub-issue link not possible because #{child} already has a parent issue.*"
-            )
-            comments.append({"created_at": timestamp, "body": body})
-        elif child == bug_id:
-            body = (
-                f"**Depends on** #{parent}{attribution}\n\n"
-                f"*Note: sub-issue link not possible because this issue already has a parent issue.*"
-            )
-            comments.append({"created_at": timestamp, "body": body})
-
-    return comments
-
-
 def build_import_payload(bug_id):
     """Build the import payload for a real bug. Returns (payload, assignee)."""
     bug_dir = export_dir / str(bug_id)
@@ -455,11 +412,6 @@ def build_import_payload(bug_id):
     status_comments = build_status_change_comments(bug, history)
     if status_comments:
         gh_comments.extend(status_comments)
-
-    # Add dependency fallback comments for relationships that can't be sub-issue links
-    dep_comments = build_dependency_comments(bug_id, bug)
-    if dep_comments:
-        gh_comments.extend(dep_comments)
 
     # Sort by created_at; comments without a timestamp go to the end
     gh_comments.sort(key=lambda c: c.get("created_at", "9999"))
