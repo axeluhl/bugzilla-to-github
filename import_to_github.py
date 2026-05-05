@@ -400,8 +400,10 @@ def build_import_payload(bug_id):
     bug_dir = export_dir / str(bug_id)
     bug = json.loads((bug_dir / "bug.json").read_text())
     comments = json.loads((bug_dir / "comments.json").read_text())
-    attachments = json.loads((bug_dir / "attachments.json").read_text())
-    history = json.loads((bug_dir / "history.json").read_text())
+    att_path = bug_dir / "attachments.json"
+    attachments = json.loads(att_path.read_text()) if att_path.exists() else []
+    hist_path = bug_dir / "history.json"
+    history = json.loads(hist_path.read_text()) if hist_path.exists() else []
 
     body = build_issue_body(bug, comments, history)
     gh_comments = build_comments(comments, bug_id, attachments)

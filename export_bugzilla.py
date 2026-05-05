@@ -120,6 +120,8 @@ def export_bug(bug_id):
 
     attachment_meta = []
     for att in attachments_raw:
+        if not att.get("data"):
+            continue
         file_data = base64.b64decode(att["data"])
         safe_name = f"{att['id']}_{att['file_name']}"
         (attach_dir / safe_name).write_bytes(file_data)
