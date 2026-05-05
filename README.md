@@ -180,6 +180,13 @@ Creates formal GitHub sub-issue relationships via GraphQL:
 - Bugzilla `A depends_on B` → B is parent, A is sub-issue of B
 - Bugzilla `A blocks B` → A is parent, B is sub-issue of A
 
+**Multi-parent handling:** GitHub only allows one parent per child issue.
+When a bug depends on multiple others, the earliest-created relationship
+(by Bugzilla history timestamp) gets the sub-issue link. The remaining
+relationships are preserved as timestamped comments created during import
+(Step 5), with full provenance (who added the link and when). The logic
+for this split lives in `dependency_plan.py`.
+
 Limits: 100 sub-issues per parent, 8 nesting levels, no cycles.
 
 ### Step 7: Fix Up Comment Links
@@ -238,10 +245,12 @@ with a subscribe link for each.
 | `upload_attachments.py` | Upload attachment files to GitHub |
 | `create_labels.py` | Pre-create all labels on target repo |
 | `import_to_github.py` | Import issues via the GitHub Import API |
+| `dependency_plan.py` | Library: pre-computes which dependencies can be sub-issue links vs. comments |
 | `link_sub_issues.py` | Wire up blocks/depends_on as GitHub sub-issues |
 | `fixup_comment_links.py` | Post-import: rewrite comment references to anchor links |
 | `notify_cc_users.py` | Email unmapped CC users with subscribe links |
 | `rewrite_references.py` | Library: rewrites bug/comment references to GitHub links |
+| `generate_user_mapping.py` | Auto-discover GitHub accounts by probing commit-email resolution |
 
 ## Important Notes
 
