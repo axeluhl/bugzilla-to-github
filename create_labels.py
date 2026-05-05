@@ -36,6 +36,13 @@ COLORS = {
     "placeholder": "cccccc",
 }
 
+# Priority-specific colors
+PRIORITY_COLORS = {
+    "P1": "d93f0b",   # red
+    "P2": "e36209",   # orange
+    "P3": "e4e669",   # yellow
+}
+
 
 def collect_labels():
     """Scan all exported bugs and build the full label set."""
@@ -62,7 +69,7 @@ def collect_labels():
 
         if bug.get("priority") and bug["priority"] != "--":
             name = f"priority: {bug['priority']}"
-            labels[name] = COLORS["priority"]
+            labels[name] = PRIORITY_COLORS.get(bug["priority"], COLORS["priority"])
 
         if bug.get("op_sys"):
             name = f"os: {bug['op_sys']}"
@@ -87,10 +94,16 @@ def collect_labels():
 
 
 def create_label(name, color):
-    """Create a label, ignoring if it already exists."""
+    """Create a label, or update its color if it already exists."""
     resp = session.post(LABELS_URL, json={"name": name, "color": color})
     if resp.status_code == 422:
-        return False  # Already exists
+        # Already exists — update color
+        resp = session.patch(
+            f"{LABELS_URL}/{requests.utils.quote(name, safe='')}",
+            json={"color": color},
+        )
+        resp.raise_for_status()
+        return False
     resp.raise_for_status()
     return True
 
