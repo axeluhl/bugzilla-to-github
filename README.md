@@ -7,8 +7,8 @@ Migrates a Bugzilla 5.2 instance to GitHub Issues preserving:
 - **User attribution** — mapped users get @mentions; unmapped users show Real Name + email
 - **Product/component** — preserved as GitHub labels
 - **Dependencies** — `blocks`/`depends_on` become GitHub blocking/blocked-by relationships
-- **See-also** — Bugzilla see_also URLs converted to `#N` cross-references
-- **Inline references** — `bug 123`, `Bug#45`, `comment #7` rewritten to GitHub links
+- **See-also** — Bugzilla see_also URLs converted to issue links
+- **Inline references** — `Bug 123`, `bug 123` rewritten to issue links; `bug1234` (no separator) heuristically classified as issue or branch link based on context; `comment #7` linked to anchors post-import
 - **Attachments** — uploaded to a dedicated repo and linked in issue bodies
 - **CC lists** — mapped users are @mentioned (auto-subscribed); unmapped users receive an email notification with subscribe links
 
@@ -243,7 +243,7 @@ with a subscribe link for each.
 | `link_sub_issues.py` | Wire up blocks/depends_on as GitHub blocking relationships |
 | `fixup_comment_links.py` | Post-import: rewrite comment references to anchor links |
 | `notify_cc_users.py` | Email unmapped CC users with subscribe links |
-| `rewrite_references.py` | Library: rewrites bug/comment references to GitHub links |
+| `rewrite_references.py` | Library: rewrites bug/comment/branch references to GitHub links |
 | `generate_user_mapping.py` | Auto-discover GitHub accounts by probing commit-email resolution |
 
 ## Important Notes
