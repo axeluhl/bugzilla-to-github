@@ -35,6 +35,21 @@ API = f"https://api.github.com/repos/{config.GITHUB_OWNER}/{config.GITHUB_REPO}"
 
 # Rate limit: stay well under 5000/hour
 REQUEST_DELAY = 0.5
+MAX_RETRIES = 5
+RETRY_STATUSES = {502, 503, 504, 429}
+
+
+def _request_with_retry(method, url, **kwargs):
+    """Make an HTTP request with retry on transient errors."""
+    for attempt in range(MAX_RETRIES):
+        resp = method(url, **kwargs)
+        if resp.status_code in RETRY_STATUSES:
+            wait = 2 ** attempt
+            print(f"    Retry {attempt + 1}/{MAX_RETRIES} after {resp.status_code}, waiting {wait}s...")
+            time.sleep(wait)
+            continue
+        return resp
+    return resp
 
 
 def fetch_issue_comments(issue_number):
@@ -44,7 +59,7 @@ def fetch_issue_comments(issue_number):
     params = {"per_page": 100}
 
     while url:
-        resp = session.get(url, params=params)
+        resp = _request_with_retry(session.get, url, params=params)
         if resp.status_code == 404:
             return []
         resp.raise_for_status()
@@ -126,7 +141,7 @@ def rewrite_comment_refs(text, issue_number, comment_map, all_comment_maps):
 
 def patch_issue_body(issue_number, new_body):
     """Update an issue's body via PATCH."""
-    resp = session.patch(
+    resp = _request_with_retry(session.patch,
         f"{API}/issues/{issue_number}",
         json={"body": new_body},
     )
@@ -136,7 +151,7 @@ def patch_issue_body(issue_number, new_body):
 
 def patch_comment_body(comment_id, new_body):
     """Update a comment's body via PATCH."""
-    resp = session.patch(
+    resp = _request_with_retry(session.patch,
         f"{API}/issues/comments/{comment_id}",
         json={"body": new_body},
     )
@@ -149,30 +164,46 @@ def main():
     bug_id_set = set(bug_ids)
     max_id = max(bug_ids)
 
-    print(f"Phase 1: Fetching comment URLs for {len(bug_ids)} issues...")
+    # Phase 1: build comment maps (cached to disk for resume)
+    comment_map_file = export_dir / "comment_map.json"
+    if comment_map_file.exists():
+        print("Phase 1: Loading cached comment map...")
+        raw = json.loads(comment_map_file.read_text())
+        all_comment_maps = {int(k): {int(ck): cv for ck, cv in v.items()} for k, v in raw.items()}
+        print(f"  Loaded maps for {len(all_comment_maps)} issues.\n")
+    else:
+        print(f"Phase 1: Fetching comment URLs for {len(bug_ids)} issues...")
+        all_comment_maps = {}
 
-    # Build comment maps for all real issues
-    all_comment_maps = {}  # issue_number → {comment_index → url}
+        for i, bug_id in enumerate(bug_ids, 1):
+            comments = fetch_issue_comments(bug_id)
+            all_comment_maps[bug_id] = build_comment_map(bug_id, comments)
+            if i % 100 == 0:
+                print(f"  Fetched {i}/{len(bug_ids)}...")
 
-    for i, bug_id in enumerate(bug_ids, 1):
-        comments = fetch_issue_comments(bug_id)
-        all_comment_maps[bug_id] = build_comment_map(bug_id, comments)
-        if i % 100 == 0:
-            print(f"  Fetched {i}/{len(bug_ids)}...")
+        comment_map_file.write_text(json.dumps(all_comment_maps))
+        print(f"  Done. Mapped comments for {len(all_comment_maps)} issues.\n")
 
-    print(f"  Done. Mapped comments for {len(all_comment_maps)} issues.\n")
+    # Phase 2: rewrite references (resumable via progress file)
+    progress_file = export_dir / "fixup_progress.json"
+    if progress_file.exists():
+        completed = set(json.loads(progress_file.read_text()))
+    else:
+        completed = set()
 
-    print("Phase 2: Rewriting references in issue bodies and comments...")
+    remaining = [b for b in bug_ids if b not in completed]
+    print(f"Phase 2: Rewriting references ({len(completed)} already done, {len(remaining)} remaining)...")
 
     patched_issues = 0
     patched_comments = 0
 
-    for i, bug_id in enumerate(bug_ids, 1):
+    for i, bug_id in enumerate(remaining, 1):
         comment_map = all_comment_maps.get(bug_id, {})
 
         # Fetch the issue body
-        resp = session.get(f"{API}/issues/{bug_id}")
+        resp = _request_with_retry(session.get, f"{API}/issues/{bug_id}")
         if resp.status_code == 404:
+            completed.add(bug_id)
             continue
         resp.raise_for_status()
         issue_data = resp.json()
@@ -196,8 +227,11 @@ def main():
                 patch_comment_body(gh_comment["id"], new_comment_body)
                 patched_comments += 1
 
+        completed.add(bug_id)
+        progress_file.write_text(json.dumps(sorted(completed)))
+
         if i % 100 == 0:
-            print(f"  Processed {i}/{len(bug_ids)} issues...")
+            print(f"  Processed {i}/{len(remaining)} issues...")
 
     print(f"\nDone. Patched {patched_issues} issue bodies and {patched_comments} comments.")
 
