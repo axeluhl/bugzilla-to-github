@@ -537,9 +537,12 @@ def main():
         elif data["status"] == "failed":
             errors = data.get("errors", [])
             print(f"  Previous import failed: {errors}")
-            print(f"  Aborting: cannot recover from a failed import without breaking ID alignment.")
-            print(f"  Delete the repo, recreate it, delete {progress_file}, and restart.")
-            sys.exit(1)
+            print(f"  Retrying import for bug {pending_id}...")
+            # Failed imports don't consume the issue number — safe to retry
+            del progress["pending_id"]
+            del progress["pending_import_id"]
+            progress_file.write_text(json.dumps(progress))
+            start_from = pending_id
         else:
             # Still pending — wait for it
             print(f"  Still pending, waiting...")
@@ -578,11 +581,22 @@ def main():
 
             issue_url = wait_for_import(result)
 
-            # If failed due to assignee, retry without
+            # If failed, retry without assignee first, then retry once more
             if issue_url is None and assignee and "assignee" in payload["issue"]:
                 del payload["issue"]["assignee"]
                 print(f"  Retrying bug {expected_id} without assignee '{assignee}'...")
                 result = submit_import(payload)
+                progress["pending_import_id"] = result["id"]
+                progress_file.write_text(json.dumps(progress))
+                issue_url = wait_for_import(result)
+
+            if issue_url is None:
+                print(f"  Import failed, waiting 10s before final retry...")
+                time.sleep(10)
+                retry_payload, _ = build_import_payload(expected_id)
+                if "assignee" in retry_payload["issue"]:
+                    del retry_payload["issue"]["assignee"]
+                result = submit_import(retry_payload)
                 progress["pending_import_id"] = result["id"]
                 progress_file.write_text(json.dumps(progress))
                 issue_url = wait_for_import(result)
