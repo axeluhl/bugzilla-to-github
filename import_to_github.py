@@ -459,9 +459,16 @@ def build_import_payload(bug_id):
 
 def submit_import(payload):
     """Submit an import payload and return the API response JSON."""
-    resp = session.post(IMPORT_URL, json=payload)
+    for attempt in range(5):
+        resp = session.post(IMPORT_URL, json=payload)
+        if resp.status_code in (401, 502, 503, 504, 429):
+            wait = 2 ** attempt
+            print(f"    Submit got {resp.status_code}, retrying in {wait}s...")
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        return resp.json()
     resp.raise_for_status()
-    return resp.json()
 
 
 def wait_for_import(import_response):
@@ -471,6 +478,11 @@ def wait_for_import(import_response):
 
     while True:
         resp = session.get(status_url)
+        if resp.status_code in (401, 502, 503, 504, 429):
+            wait = 5
+            print(f"    Poll got {resp.status_code}, retrying in {wait}s...")
+            time.sleep(wait)
+            continue
         resp.raise_for_status()
         data = resp.json()
         status = data["status"]
