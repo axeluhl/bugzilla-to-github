@@ -165,6 +165,20 @@ What to verify during dry run:
 - [ ] CC @mention comment subscribes users (test with your own account on CC)
 - [ ] Placeholder issues are closed with the `placeholder` label
 
+#### Starting Over
+
+To re-run the import from scratch (e.g., after deleting and recreating the test repo),
+delete the progress/cache files but keep the Bugzilla export data:
+
+```bash
+rm -f bugzilla_export/import_progress.json
+rm -f bugzilla_export/link_progress.json
+rm -f bugzilla_export/comment_map.json
+rm -f bugzilla_export/fixup_progress.json
+```
+
+Then re-run from Step 3 (create labels) onward.
+
 ### Step 5: Production Import
 
 Once the dry run looks good, point `config.py` at the real repo and run:
