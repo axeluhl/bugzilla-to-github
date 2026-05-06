@@ -50,13 +50,25 @@ Create `user_mapping.json` mapping Bugzilla login emails to GitHub usernames:
 }
 ```
 
+You can auto-generate this file by probing GitHub's commit-email resolution:
+
+```bash
+python3 generate_user_mapping.py
+```
+
+This creates empty commits authored by each Bugzilla email, pushes them to a
+temporary branch on the attachments repo, then queries the GitHub API to see
+which emails resolved to GitHub accounts. Results are merged into
+`user_mapping.json` without overwriting manual entries. The probe branch is
+deleted after.
+
 Users in this file get:
 - `@username` mentions in issue bodies and comments
 - Set as assignee when they were the Bugzilla assignee
 - Auto-subscribed to issues they were CC'd on (via @mention)
 
 Users **not** in this file get their Bugzilla "Real Name" displayed alongside their email,
-and receive a notification email (see Step 7) inviting them to subscribe on GitHub.
+and receive a notification email (see Step 8) inviting them to subscribe on GitHub.
 
 ## Migration Process
 
