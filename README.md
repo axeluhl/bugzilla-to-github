@@ -31,8 +31,9 @@ Edit `config.py`:
 
 | Setting | Description |
 |---------|-------------|
-| `BUGZILLA_URL` | Base URL of your Bugzilla instance |
+| `BUGZILLA_URL` | Base URL of your Bugzilla instance (used for API access) |
 | `BUGZILLA_API_KEY` | Bugzilla API key (generate in Bugzilla Preferences → API Keys) |
+| `BUGZILLA_BACKLINK_URL` | URL for back-links in issue headers (defaults to `BUGZILLA_URL`). Set to an alternate host if you plan to redirect `BUGZILLA_URL` to GitHub and serve old Bugzilla read-only elsewhere |
 | `GITHUB_TOKEN` | GitHub PAT |
 | `GITHUB_OWNER` | GitHub org or user |
 | `GITHUB_REPO` | Target repository for issues |

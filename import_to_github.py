@@ -31,6 +31,9 @@ from rewrite_references import rewrite_bug_references
 
 export_dir = Path(config.EXPORT_DIR)
 
+# URL for back-links to the original Bugzilla (may differ from API URL if redirecting)
+_backlink_url = getattr(config, "BUGZILLA_BACKLINK_URL", None) or config.BUGZILLA_URL
+
 # Load user mapping (email → GitHub username)
 user_map = json.loads(Path(config.USER_MAPPING_FILE).read_text())
 
@@ -256,7 +259,7 @@ def build_issue_body(bug, comments, history, attachments=None, bug_id=None):
     meta += (
         f"| **Created** | {bug.get('creation_time', '')} |\n"
         f"| **Original Bug** | [Bug {bug_id}]"
-        f"({config.BUGZILLA_URL}/show_bug.cgi?id={bug_id}) |\n"
+        f"({_backlink_url}/show_bug.cgi?id={bug_id}) |\n"
     )
 
     # Compose
