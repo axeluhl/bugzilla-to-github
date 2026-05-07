@@ -9,7 +9,8 @@ Migrates a Bugzilla 5.2 instance to GitHub Issues preserving:
 - **Dependencies** — `blocks`/`depends_on` become GitHub blocking/blocked-by relationships
 - **See-also** — Bugzilla see_also URLs converted to issue links
 - **Inline references** — `Bug 123`, `bug 123` rewritten to issue links; `bug1234` (no separator) heuristically classified as issue or branch link based on context; `comment #7` linked to anchors post-import
-- **Attachments** — uploaded to a dedicated repo and linked in issue bodies
+- **Attachments** — uploaded to a dedicated repo and linked in issue bodies; TIFF images converted to PNG for inline display
+- **Code annotations** — Java `@Annotation` patterns escaped as inline code to prevent false GitHub @mentions
 - **CC lists** — mapped users are @mentioned (auto-subscribed); unmapped users receive an email notification with subscribe links
 
 ## Prerequisites

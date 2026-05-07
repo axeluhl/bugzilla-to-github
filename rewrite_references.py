@@ -7,15 +7,104 @@ Handles:
 - "bug 123 comment 4", "bug 123, comment #4" → issue comment link
 - "comment #4" / "comment 4" (within same bug) → link to comment
 - see_also URLs pointing to the same Bugzilla → issue links
+- @Annotations (Java-style) → escaped as inline code to prevent false GitHub mentions
 """
 
+import json
 import re
+from pathlib import Path
 
 import config
 
 BUGZILLA_URL_PATTERN = re.escape(config.BUGZILLA_URL)
 GITHUB_ISSUE_URL = f"https://github.com/{config.GITHUB_OWNER}/{config.GITHUB_REPO}/issues"
 GITHUB_BRANCH_URL = f"https://github.com/{config.GITHUB_OWNER}/{config.GITHUB_REPO}/tree"
+
+# GitHub usernames from user mapping (case-insensitive lookup)
+_user_map = json.loads(Path(config.USER_MAPPING_FILE).read_text())
+_github_usernames = {name.lower() for name in _user_map.values() if name}
+
+KNOWN_JAVA_ANNOTATIONS = {
+    "Override", "SuppressWarnings", "Deprecated", "FunctionalInterface",
+    "SafeVarargs", "Nullable", "NonNull", "NotNull", "Nonnull", "CheckForNull",
+    "Entity", "Table", "Column", "Id", "GeneratedValue", "ManyToOne",
+    "OneToMany", "OneToOne", "ManyToMany", "JoinColumn", "JoinTable",
+    "MappedSuperclass", "Embeddable", "Embedded", "Enumerated", "Lob",
+    "Transient", "Version", "Access", "Cacheable", "PrePersist", "PostPersist",
+    "PreUpdate", "PostUpdate", "PreRemove", "PostRemove",
+    "Transactional", "Autowired", "Component", "Service", "Repository",
+    "Controller", "RestController", "RequestMapping", "GetMapping",
+    "PostMapping", "PutMapping", "DeleteMapping", "PatchMapping",
+    "PathVariable", "RequestParam", "RequestBody", "ResponseBody",
+    "Bean", "Configuration", "Value", "Scope", "Qualifier", "Primary",
+    "Profile", "ConditionalOnProperty", "EnableAutoConfiguration",
+    "SpringBootApplication", "ComponentScan", "Import",
+    "Test", "Before", "After", "BeforeEach", "AfterEach", "BeforeAll",
+    "AfterAll", "BeforeClass", "AfterClass", "Mock", "InjectMocks", "Spy",
+    "Captor", "ExtendWith", "RunWith", "SpringBootTest", "MockBean",
+    "ParameterizedTest", "DisplayName", "Disabled", "Nested", "Tag",
+    "JsonProperty", "JsonIgnore", "JsonCreator", "JsonValue",
+    "JsonDeserialize", "JsonSerialize", "JsonFormat", "JsonInclude",
+    "Inject", "Singleton", "Provides", "Named", "Produces", "Dependent",
+    "ApplicationScoped", "RequestScoped", "SessionScoped",
+    "Data", "Getter", "Setter", "Builder", "AllArgsConstructor",
+    "NoArgsConstructor", "RequiredArgsConstructor", "EqualsAndHashCode",
+    "ToString", "Slf4j", "Log4j", "Log4j2", "Log",
+    "Valid", "NotBlank", "NotEmpty", "Size", "Min", "Max", "Pattern", "Email",
+    "Positive", "PositiveOrZero", "Negative", "NegativeOrZero", "Future", "Past",
+    "SuppressLint", "TargetApi", "RequiresApi", "IntDef", "StringDef",
+    "VisibleForTesting", "Keep", "MainThread", "WorkerThread",
+    "Retention", "Target", "Documented", "Inherited", "Repeatable",
+}
+
+# Regex for fenced code blocks (``` ... ```)
+_FENCED_BLOCK_RE = re.compile(r'(```.*?```)', re.DOTALL)
+# Regex for @UppercaseWord not preceded by a word char
+_AT_MENTION_RE = re.compile(r'(?<!\w)@([A-Z]\w+)')
+
+
+def escape_code_mentions(text):
+    """Escape @UppercaseWord patterns that look like code annotations.
+
+    Three-tier logic:
+    1. Known Java annotations → always escape
+    2. Known GitHub usernames (from user mapping) → never escape
+    3. Unknown → escape (avoid false pings)
+    """
+    # Split by fenced code blocks to skip them
+    parts = _FENCED_BLOCK_RE.split(text)
+
+    for i, part in enumerate(parts):
+        # Odd indices are fenced code blocks — skip
+        if i % 2 == 1:
+            continue
+
+        def _replace_at_mention(m):
+            word = m.group(1)
+            full = m.group(0)
+            start = m.start()
+
+            # Already inside backticks?
+            before = part[:start]
+            after_pos = start + len(full)
+            after = part[after_pos:] if after_pos < len(part) else ""
+            if before.endswith("`") and after.startswith("`"):
+                return full
+
+            # Tier 1: known annotation → escape
+            if word in KNOWN_JAVA_ANNOTATIONS:
+                return f'`{full}`'
+
+            # Tier 2: known GitHub username → leave as-is
+            if word.lower() in _github_usernames:
+                return full
+
+            # Tier 3: unknown → escape (avoid false pings)
+            return f'`{full}`'
+
+        parts[i] = _AT_MENTION_RE.sub(_replace_at_mention, part)
+
+    return "".join(parts)
 
 # Words before "bugXXXX" that suggest a branch reference
 BRANCH_PREFIX_WORDS = {
@@ -143,6 +232,9 @@ def rewrite_bug_references(text, current_bug_id=None, comment_id_map=None):
         comment_id_map: Dict mapping (bug_id, comment_count) → GitHub comment URL.
                         Can be None if not yet available (filled in post-import).
     """
+    # Escape @Annotations before other transforms (avoids false GitHub mentions)
+    text = escape_code_mentions(text)
+
     # "bug 123 comment #4" or "bug 123, comment 4"
     text = re.sub(
         r'\b[Bb]ug\s*#?(\d+)[,;]?\s*[Cc]omment\s*#?(\d+)',
