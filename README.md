@@ -15,8 +15,10 @@ Migrates a Bugzilla 5.2 instance to GitHub Issues preserving:
 ## Prerequisites
 
 ```bash
-pip install requests
+pip install requests Pillow
 ```
+
+`Pillow` is needed to convert TIFF attachments to PNG for inline display (browsers cannot render TIFF).
 
 A GitHub Personal Access Token (classic or fine-grained) with:
 - `repo` scope (for issue import, label creation, attachment upload)
