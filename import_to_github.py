@@ -197,14 +197,17 @@ def build_status_change_comments(bug, history):
     return status_comments
 
 
-def build_issue_body(bug, comments, history):
+def build_issue_body(bug, comments, history, attachments=None, bug_id=None):
     """Construct the full issue body with metadata, description, and close attribution."""
     # Description is comment 0
     description = ""
+    desc_attachment_id = None
     if comments and comments[0].get("count") == 0:
         description = comments[0]["text"]
+        desc_attachment_id = comments[0].get("attachment_id")
 
-    bug_id = bug["id"]
+    if bug_id is None:
+        bug_id = bug["id"]
 
     # Rewrite references in description
     description = rewrite_bug_references(description, current_bug_id=bug_id)
@@ -265,21 +268,34 @@ def build_issue_body(bug, comments, history):
 
     parts.append(f"\n---\n\n{description}")
 
+    # Embed attachment from comment 0 (description) if present
+    if desc_attachment_id and attachments:
+        att_by_id = {att["id"]: att for att in attachments}
+        att = att_by_id.get(desc_attachment_id)
+        if att:
+            parts.append(f"\n\n{format_attachment(att, bug_id)}")
+
     return "\n".join(parts)
 
 
 IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"}
+TIFF_CONTENT_TYPES = {"image/tiff", "image/x-tiff"}
 
 
 def format_attachment(att, bug_id):
     """Render an attachment as inline image or download link."""
     fname = att["local_file"]
-    url = f"{ATTACHMENT_BASE}/{bug_id}/{fname}"
     content_type = att.get("content_type", "")
     summary = att.get("summary", att.get("file_name", "attachment"))
     obsolete = " *(obsolete)*" if att.get("is_obsolete") else ""
 
-    if content_type in IMAGE_CONTENT_TYPES:
+    # TIFF files are converted to PNG during upload
+    if content_type in TIFF_CONTENT_TYPES:
+        fname = str(Path(fname).with_suffix(".png"))
+
+    url = f"{ATTACHMENT_BASE}/{bug_id}/{fname}"
+
+    if content_type in IMAGE_CONTENT_TYPES or content_type in TIFF_CONTENT_TYPES:
         # Inline image with summary as alt text
         return f"![{summary}]({url}){obsolete}"
     else:
@@ -303,6 +319,10 @@ def build_comments(comments, bug_id, attachments):
     gh_comments = []
     for c in comments:
         if c.get("count", 0) == 0:
+            # Comment 0 is the issue body — still track its attachment as referenced
+            att_id = c.get("attachment_id")
+            if att_id and att_id in att_by_id:
+                referenced_att_ids.add(att_id)
             continue
 
         author = map_user(c.get("creator", "unknown"))
@@ -332,9 +352,10 @@ def build_comments(comments, bug_id, attachments):
         creator = att.get("creator", "unknown")
         author = map_user(creator)
         comment_body = f"**{author}** attached:\n\n{att_rendered}"
-        gh_comments.append({
-            "body": comment_body,
-        })
+        gh_comment = {"body": comment_body}
+        if att.get("creation_time"):
+            gh_comment["created_at"] = att["creation_time"]
+        gh_comments.append(gh_comment)
 
     return gh_comments
 
@@ -405,7 +426,7 @@ def build_import_payload(bug_id):
     hist_path = bug_dir / "history.json"
     history = json.loads(hist_path.read_text()) if hist_path.exists() else []
 
-    body = build_issue_body(bug, comments, history)
+    body = build_issue_body(bug, comments, history, attachments, bug_id)
     gh_comments = build_comments(comments, bug_id, attachments)
 
     # Add status-change comments and sort everything chronologically
